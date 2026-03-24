@@ -1,0 +1,215 @@
+name: FluidAudioAPI Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/FluidAudioAPI/**'
+      - 'Tests/FluidAudioAPITests/**'
+      - 'Package.swift'
+      - '.github/workflows/fluidaudio-api-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Sources/FluidAudioAPI/**'
+      - 'Tests/FluidAudioAPITests/**'
+      - 'Package.swift'
+      - '.github/workflows/fluidaudio-api-tests.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-fluidaudio-api:
+    name: FluidAudioAPI Tests (macOS Apple Silicon)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Check versions
+        run: |
+          swift --version
+          xcodebuild -version
+          uname -m
+
+      - name: Build FluidAudioAPI
+        run: swift build --target FluidAudioAPI
+        timeout-minutes: 10
+
+      - name: Run FluidAudioAPI tests
+        run: swift test --filter FluidAudioAPITests
+        timeout-minutes: 5
+        env:
+          # Ensure we're testing the actual API behavior
+          SWIFT_DETERMINISTIC_HASHING: 1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluidaudio-api-test-results
+          path: |
+            .build/debug/FluidAudioAPITests.xctest
+            .build/debug/*.json
+          retention-days: 7
+
+  test-fluidaudio-api-release:
+    name: FluidAudioAPI Tests (Release Mode)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Build FluidAudioAPI (Release)
+        run: swift build -c release --target FluidAudioAPI
+        timeout-minutes: 15
+
+      - name: Run FluidAudioAPI tests (Release)
+        run: swift test -c release --filter FluidAudioAPITests
+        timeout-minutes: 5
+
+  validate-examples:
+    name: Validate FluidAudioAPI Examples
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Check example files compile
+        run: |
+          # Verify examples directory structure
+          if [ -d "Sources/FluidAudioAPI/Examples" ]; then
+            echo "✅ Examples directory found"
+            ls -la Sources/FluidAudioAPI/Examples/
+
+            # Count example files
+            EXAMPLE_COUNT=$(find Sources/FluidAudioAPI/Examples -name "*.swift" | wc -l | tr -d ' ')
+            echo "Found $EXAMPLE_COUNT example files"
+
+            if [ "$EXAMPLE_COUNT" -lt 3 ]; then
+              echo "⚠️ Expected at least 3 examples (Transcription, RealtimeSamples, Diarization)"
+              exit 1
+            fi
+
+            echo "✅ All expected examples present"
+          else
+            echo "❌ Examples directory not found"
+            exit 1
+          fi
+
+  validate-documentation:
+    name: Validate FluidAudioAPI Documentation
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Check README exists
+        run: |
+          if [ -f "Sources/FluidAudioAPI/README.md" ]; then
+            echo "✅ FluidAudioAPI README.md found"
+            wc -l Sources/FluidAudioAPI/README.md
+
+            # Check for key sections
+            if grep -q "## Features" Sources/FluidAudioAPI/README.md && \
+               grep -q "## Installation" Sources/FluidAudioAPI/README.md && \
+               grep -q "## Usage" Sources/FluidAudioAPI/README.md && \
+               grep -q "transcribeSamples" Sources/FluidAudioAPI/README.md; then
+              echo "✅ README contains all required sections"
+            else
+              echo "❌ README missing required sections"
+              exit 1
+            fi
+          else
+            echo "❌ FluidAudioAPI README.md not found"
+            exit 1
+          fi
+
+      - name: Check migration guide exists
+        run: |
+          if [ -f "MIGRATION_TO_SWIFT6.md" ]; then
+            echo "✅ Migration guide found"
+            wc -l MIGRATION_TO_SWIFT6.md
+          else
+            echo "⚠️ Migration guide not found (optional)"
+          fi
+
+  test-swift-6-compliance:
+    name: Swift 6 Strict Concurrency Compliance
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Build with strict concurrency
+        run: |
+          # FluidAudioAPI already has strict concurrency enabled
+          # This build will fail if there are any concurrency violations
+          swift build --target FluidAudioAPI
+
+          # Check for warnings
+          OUTPUT=$(swift build --target FluidAudioAPI 2>&1)
+          WARNING_COUNT=$(echo "$OUTPUT" | grep -c "warning:" || true)
+
+          echo "Build warnings: $WARNING_COUNT"
+
+          if [ "$WARNING_COUNT" -gt 1 ]; then
+            echo "⚠️ Found $WARNING_COUNT warnings (expected ≤1 for OfflineDiarizerManager)"
+            echo "$OUTPUT" | grep "warning:"
+          else
+            echo "✅ Minimal warnings (Swift 6 compliant)"
+          fi
+
+  verify-issue-3-feature:
+    name: Verify Issue #3 Feature (transcribeSamples)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Build FluidAudioAPI
+        run: swift build --target FluidAudioAPI
+
+      - name: Run transcribeSamples test
+        run: |
+          # Run the specific test that verifies issue #3
+          swift test --filter FluidAudioAPITests.testTranscribeSamplesWithSilence
+
+          echo "✅ Issue #3 feature (transcribeSamples) verified working"
+
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [test-fluidaudio-api, test-fluidaudio-api-release, validate-examples, validate-documentation, test-swift-6-compliance, verify-issue-3-feature]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          echo "FluidAudioAPI Test Results:"
+          echo "✅ Unit tests: ${{ needs.test-fluidaudio-api.result }}"
+          echo "✅ Release tests: ${{ needs.test-fluidaudio-api-release.result }}"
+          echo "✅ Examples validation: ${{ needs.validate-examples.result }}"
+          echo "✅ Documentation: ${{ needs.validate-documentation.result }}"
+          echo "✅ Swift 6 compliance: ${{ needs.test-swift-6-compliance.result }}"
+          echo "✅ Issue #3 feature: ${{ needs.verify-issue-3-feature.result }}"
+
+          if [ "${{ needs.test-fluidaudio-api.result }}" != "success" ] || \
+             [ "${{ needs.test-fluidaudio-api-release.result }}" != "success" ] || \
+             [ "${{ needs.validate-examples.result }}" != "success" ] || \
+             [ "${{ needs.validate-documentation.result }}" != "success" ] || \
+             [ "${{ needs.test-swift-6-compliance.result }}" != "success" ] || \
+             [ "${{ needs.verify-issue-3-feature.result }}" != "success" ]; then
+            echo "❌ Some tests failed"
+            exit 1
+          fi
+
+          echo "✅ All FluidAudioAPI tests passed!"

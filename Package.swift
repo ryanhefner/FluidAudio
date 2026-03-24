@@ -12,6 +12,10 @@ let package = Package(
             name: "FluidAudio",
             targets: ["FluidAudio"]
         ),
+        .library(
+            name: "FluidAudioAPI",
+            targets: ["FluidAudioAPI"]
+        ),
         .executable(
             name: "fluidaudiocli",
             targets: ["FluidAudioCLI"]
@@ -31,6 +35,18 @@ let package = Package(
             path: "Sources/FluidAudio",
             exclude: [
                 "Frameworks"
+            ]
+        ),
+        .target(
+            name: "FluidAudioAPI",
+            dependencies: [
+                "FluidAudio",
+            ],
+            path: "Sources/FluidAudioAPI",
+            exclude: ["Examples", "README.md"],
+            swiftSettings: [
+                .enableUpcomingFeature("StrictConcurrency"),
+                .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
         .target(
@@ -58,6 +74,12 @@ let package = Package(
             name: "FluidAudioTests",
             dependencies: [
                 "FluidAudio",
+            ]
+        ),
+        .testTarget(
+            name: "FluidAudioAPITests",
+            dependencies: [
+                "FluidAudioAPI",
             ]
         ),
     ],
