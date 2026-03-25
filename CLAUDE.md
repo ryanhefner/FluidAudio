@@ -174,6 +174,18 @@ GitHub Actions workflows:
 - **diarizer-benchmark.yml**: Diarization benchmarks
 - **vad-benchmark.yml**: VAD validation
 
+## Showcase Section Management
+
+When adding apps to the README.md showcase:
+- Add date metadata as HTML comment after the app link: `<!-- YYYY-MM-DD -->`
+- Use the commit date (when the PR is merged) for new entries
+- Do not change existing entry order or descriptions
+
+Example:
+```markdown
+| **[MyApp](https://myapp.com)** <!-- 2026-03-25 --> | Description text |
+```
+
 ## Model Sources
 
 - **Diarization**: [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
