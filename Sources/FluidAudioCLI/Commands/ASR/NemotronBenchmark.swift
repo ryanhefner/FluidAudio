@@ -182,9 +182,17 @@ public class NemotronBenchmark {
             }
 
             // 6. Print summary
-            let finalWer = totalWords > 0 ? Double(totalErrors) / Double(totalWords) * 100.0 : 0.0
-            let rtf = totalAudioDuration > 0 ? totalProcessingTime / totalAudioDuration : 0.0
-            let rtfx = rtf > 0 ? 1.0 / rtf : 0.0
+            // Validate that benchmark actually processed data
+            guard totalWords > 0 else {
+                throw ASRError.processingFailed("Benchmark failed: no words transcribed (totalWords=0)")
+            }
+            guard totalAudioDuration > 0 else {
+                throw ASRError.processingFailed("Benchmark failed: no audio processed (totalAudioDuration=0)")
+            }
+
+            let finalWer = Double(totalErrors) / Double(totalWords) * 100.0
+            let rtf = totalProcessingTime / totalAudioDuration
+            let rtfx = 1.0 / rtf
 
             logger.info("")
             logger.info(String(repeating: "=", count: 70))
