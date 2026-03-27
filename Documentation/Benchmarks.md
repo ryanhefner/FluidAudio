@@ -435,6 +435,29 @@ swift run -c release fluidaudiocli parakeet-eou --benchmark --chunk-size 320 --u
 swift run -c release fluidaudiocli parakeet-eou --benchmark --chunk-size 160 --use-cache
 ```
 
+## Streaming ASR (Nemotron)
+
+NVIDIA's Nemotron Speech Streaming 0.6B model for low-latency streaming ASR.
+
+Model: [FluidInference/nemotron-speech-streaming-0.6b-coreml](https://huggingface.co/FluidInference/nemotron-speech-streaming-0.6b-coreml)
+
+Hardware: Apple M1, 2020, macOS 26
+
+### LibriSpeech test-clean (2620 files, 5.40h audio)
+
+| Chunk Size | WER (Avg) | Median WER | RTFx | Total Time |
+|------------|-----------|------------|------|------------|
+| 1120ms     | 2.51%     | 0.00%      | 6.03x | 3228s (53.8m) |
+| 560ms      | 2.12%     | 0.00%      | TBD  | TBD |
+
+```bash
+# Run 1120ms benchmark
+swift run -c release fluidaudiocli nemotron-benchmark --chunk 1120
+
+# Run 560ms benchmark
+swift run -c release fluidaudiocli nemotron-benchmark --chunk 560
+```
+
 ## Speaker Diarization
 
 The offline version uses the community-1 model, the online version uses the legacy speaker-diarization-3.1 model.
