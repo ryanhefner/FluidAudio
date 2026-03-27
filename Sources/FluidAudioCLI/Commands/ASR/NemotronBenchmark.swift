@@ -189,6 +189,9 @@ public class NemotronBenchmark {
             guard totalAudioDuration > 0 else {
                 throw ASRError.processingFailed("Benchmark failed: no audio processed (totalAudioDuration=0)")
             }
+            guard totalProcessingTime > 0 else {
+                throw ASRError.processingFailed("Benchmark failed: no processing time recorded (totalProcessingTime=0)")
+            }
 
             let finalWer = Double(totalErrors) / Double(totalWords) * 100.0
             let rtf = totalProcessingTime / totalAudioDuration
