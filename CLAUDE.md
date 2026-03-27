@@ -127,7 +127,9 @@ swift run fluidaudiocli download --dataset librispeech-test-clean
 FluidAudio/
 ├── Sources/
 │   ├── FluidAudio/           # Main library (single product)
-│   │   ├── ASR/             # Automatic Speech Recognition (Parakeet TDT, Qwen3)
+│   │   ├── ASR/             # Automatic Speech Recognition
+│   │   │   ├── Parakeet/    # Parakeet TDT (Decoder/, SlidingWindow/, Streaming/)
+│   │   │   └── Qwen3/       # Qwen3 ASR
 │   │   ├── Diarizer/        # Speaker diarization (segmentation, embedding, clustering)
 │   │   ├── TTS/             # Text-to-speech (Kokoro, PocketTTS)
 │   │   ├── VAD/             # Voice Activity Detection (Silero VAD)
