@@ -3,12 +3,15 @@ import Foundation
 /// Model repositories on HuggingFace
 public enum Repo: String, CaseIterable, Sendable {
     case vad = "FluidInference/silero-vad-coreml"
-    case parakeet = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+    case parakeetV3 = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
     case parakeetV2 = "FluidInference/parakeet-tdt-0.6b-v2-coreml"
     case parakeetCtc110m = "FluidInference/parakeet-ctc-110m-coreml"
     case parakeetCtc06b = "FluidInference/parakeet-ctc-0.6b-coreml"
     case parakeetCtcZhCn = "FluidInference/parakeet-ctc-0.6b-zh-cn-coreml"
-    case parakeetJa = "FluidInference/parakeet-0.6b-ja-coreml"  // Contains both CTC and TDT models (INT8 quantized encoder)
+    // Japanese hybrid TDT: INT8 CTC-trained preprocessor+encoder paired with a
+    // TDT decoder+joint. CTC-only inference for Japanese was removed in
+    // 846924a1d; only the preprocessor+encoder files from this repo are reused.
+    case parakeetJa = "FluidInference/parakeet-0.6b-ja-coreml"
     case parakeetEou160 = "FluidInference/parakeet-realtime-eou-120m-coreml/160ms"
     case parakeetEou320 = "FluidInference/parakeet-realtime-eou-120m-coreml/320ms"
     case parakeetEou1280 = "FluidInference/parakeet-realtime-eou-120m-coreml/1280ms"
@@ -32,7 +35,7 @@ public enum Repo: String, CaseIterable, Sendable {
         switch self {
         case .vad:
             return "silero-vad-coreml"
-        case .parakeet:
+        case .parakeetV3:
             return "parakeet-tdt-0.6b-v3-coreml"
         case .parakeetV2:
             return "parakeet-tdt-0.6b-v2-coreml"
@@ -233,13 +236,27 @@ public enum ModelNames {
         public static let encoderFile = encoder + ".mlmodelc"
         public static let decoderFile = decoder + ".mlmodelc"
         public static let jointFile = joint + ".mlmodelc"
+        /// Joint decoder variant for v3 that exposes top-K outputs
+        /// (`top_k_ids`, `top_k_logits`) used for language-aware script filtering.
+        public static let jointV3File = "JointDecisionv3.mlmodelc"
         public static let ctcHeadFile = ctcHead + ".mlmodelc"
 
+        /// Required models for v2 / legacy split-frontend loaders.
+        /// v3 uses `requiredModelsV3` (with `jointV3File`).
         public static let requiredModels: Set<String> = [
             preprocessorFile,
             encoderFile,
             decoderFile,
             jointFile,
+        ]
+
+        /// Required models for v3. v3 always uses `JointDecisionv3.mlmodelc`
+        /// (with top-K outputs for language-aware script filtering).
+        public static let requiredModelsV3: Set<String> = [
+            preprocessorFile,
+            encoderFile,
+            decoderFile,
+            jointV3File,
         ]
 
         /// Required models for fused frontend (110m hybrid: preprocessor contains encoder)
@@ -297,13 +314,18 @@ public enum ModelNames {
         ]
     }
 
-    /// TDT ja (Japanese) model names (hybrid model: CTC preprocessor/encoder + TDT decoder/joint v2)
-    /// NOTE: Uses parakeetJa repo where v2 models are uploaded
+    /// TDT ja (Japanese) model names.
+    ///
+    /// Hybrid layout: the CTC-trained preprocessor + encoder from the
+    /// `parakeetJa` repo are reused as the acoustic frontend, paired with a TDT
+    /// decoder + joint (filenames `Decoderv2.mlmodelc` / `Jointerv2.mlmodelc`
+    /// from the same repo). CTC-only inference for Japanese was removed in
+    /// 846924a1d.
     public enum TDTJa {
         public static let preprocessor = "Preprocessor"
         public static let encoder = "Encoder"
-        public static let decoder = "Decoderv2"  // v2: newly converted TDT decoder (uploaded to CTC repo)
-        public static let joint = "Jointerv2"  // v2: newly converted TDT joint (uploaded to CTC repo)
+        public static let decoder = "Decoderv2"
+        public static let joint = "Jointerv2"
 
         public static let preprocessorFile = preprocessor + ".mlmodelc"
         public static let encoderFile = encoder + ".mlmodelc"
@@ -690,7 +712,9 @@ public enum ModelNames {
         switch repo {
         case .vad:
             return ModelNames.VAD.requiredModels
-        case .parakeet, .parakeetV2:
+        case .parakeetV3:
+            return ModelNames.ASR.requiredModelsV3
+        case .parakeetV2:
             return ModelNames.ASR.requiredModels
         case .parakeetTdtCtc110m:
             return ModelNames.ASR.requiredModelsFused

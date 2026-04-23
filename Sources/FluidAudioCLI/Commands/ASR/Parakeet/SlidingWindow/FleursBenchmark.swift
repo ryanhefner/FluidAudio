@@ -538,6 +538,40 @@ public class FLEURSBenchmark {
         return (results, allHighWERCases)
     }
 
+    /// Map a FLEURS language code to the Parakeet v3 script-filter `Language` enum.
+    ///
+    /// Scope: this mapping is specific to the **Parakeet v3 TDT** benchmark and the
+    /// script-filtering `Language` enum in `Sources/FluidAudio/Shared/TokenLanguageFilter.swift`.
+    /// That enum exists to suppress Latin↔Cyrillic leakage in v3's multilingual joint
+    /// decoder, so it only enumerates languages where confusables are a concern.
+    ///
+    /// FLEURS ships 102 languages; we intentionally return `nil` for anything outside
+    /// the v3 script-filter enum (either the language isn't covered by v3, or it uses
+    /// a script that doesn't need Latin/Cyrillic disambiguation — e.g. Arabic, CJK).
+    ///
+    /// Other ASR engines have their own language enums and their own FLEURS mappings:
+    /// see `Qwen3AsrBenchmark.fleursToQwen3Language` for the Qwen3 multilingual enum
+    /// (30 languages, including CJK / Arabic / Indic that Parakeet v3 doesn't cover).
+    private func mapToLanguageEnum(_ fleursCode: String) -> Language? {
+        switch fleursCode {
+        case "en_us": return .english
+        case "pl_pl": return .polish
+        case "es_419": return .spanish
+        case "fr_fr": return .french
+        case "de_de": return .german
+        case "it_it": return .italian
+        case "ro_ro": return .romanian
+        case "cs_cz": return .czech
+        case "sk_sk": return .slovak
+        case "hr_hr": return .croatian
+        case "sl_si": return .slovenian
+        case "ru_ru": return .russian
+        case "uk_ua": return .ukrainian
+        case "bg_bg": return .bulgarian
+        default: return nil
+        }
+    }
+
     /// Process samples for a specific language
     private func processLanguageSamples(
         samples: [FLEURSSample],
@@ -581,7 +615,10 @@ public class FLEURSBenchmark {
                 let url = URL(fileURLWithPath: sample.audioPath)
                 var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
                 let inferenceStartTime = Date()
-                let result = try await asrManager.transcribe(url, decoderState: &decoderState)
+
+                // Use script filtering if language is supported
+                let languageParam = mapToLanguageEnum(language)
+                let result = try await asrManager.transcribe(url, decoderState: &decoderState, language: languageParam)
                 let processingTime = Date().timeIntervalSince(inferenceStartTime)
 
                 // Calculate metrics if reference transcription is available
