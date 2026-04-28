@@ -574,7 +574,7 @@ public enum ModelNames {
         public static let condStep = "cond_step"
         public static let flowlmStep = "flowlm_step"
         public static let flowDecoder = "flow_decoder"
-        public static let mimiDecoder = "mimi_decoder_v2"
+        public static let mimiDecoder = "mimi_decoder"
         public static let mimiEncoder = "mimi_encoder"
 
         public static let condStepFile = condStep + ".mlmodelc"
@@ -586,17 +586,13 @@ public enum ModelNames {
         /// Directory containing binary constants, tokenizer, and voice data.
         public static let constantsBinDir = "constants_bin"
 
+        /// Required files inside any language's `v2/<lang>/` pack.
         public static let requiredModels: Set<String> = [
             condStepFile,
             flowlmStepFile,
             flowDecoderFile,
             mimiDecoderFile,
             constantsBinDir,
-        ]
-
-        /// Models required for voice cloning (optional feature).
-        public static let voiceCloningModels: Set<String> = [
-            mimiEncoderFile
         ]
     }
 

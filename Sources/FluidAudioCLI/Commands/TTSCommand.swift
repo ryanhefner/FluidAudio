@@ -13,15 +13,6 @@ public struct TTS {
         return formatter.string(fromByteCount: Int64(bytes))
     }
 
-    private static func label(for variant: ModelNames.TTS.Variant) -> String {
-        switch variant {
-        case .fiveSecond:
-            return "5s"
-        case .fifteenSecond:
-            return "15s"
-        }
-    }
-
     private static func ensureArtifactsRoot() throws -> URL {
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let root = cwd.appendingPathComponent(artifactsDirectoryName, isDirectory: true)
@@ -146,6 +137,9 @@ public struct TTS {
         var cloneVoicePath: String? = nil
         var voiceFilePath: String? = nil
         var saveVoicePath: String? = nil
+        var pocketLanguage: PocketTtsLanguage = .english
+        // PocketTTS deterministic-seed mode (uses session API for fixed RNG).
+        var pocketSeed: UInt64? = nil
 
         var i = 0
         while i < arguments.count {
@@ -208,7 +202,8 @@ public struct TTS {
                     i += 1
                 }
             case "--auto-download":
-                // No-op: downloads are always ensured by the CLI
+                // No-op: downloads are always ensured by the CLI. Accepted
+                // for backward compatibility with documented examples.
                 ()
             case "--benchmark":
                 benchmarkMode = true
@@ -227,6 +222,27 @@ public struct TTS {
             case "--save-voice":
                 if i + 1 < arguments.count {
                     saveVoicePath = arguments[i + 1]
+                    i += 1
+                }
+            case "--language":
+                if i + 1 < arguments.count {
+                    let raw = arguments[i + 1].lowercased()
+                    if let parsed = PocketTtsLanguage(rawValue: raw) {
+                        pocketLanguage = parsed
+                    } else {
+                        let supported = PocketTtsLanguage.allCases
+                            .map { $0.rawValue }
+                            .joined(separator: ", ")
+                        logger.error(
+                            "Unknown PocketTTS language '\(arguments[i + 1])'. Supported: \(supported)"
+                        )
+                        return
+                    }
+                    i += 1
+                }
+            case "--seed":
+                if i + 1 < arguments.count {
+                    pocketSeed = UInt64(arguments[i + 1]) ?? 42
                     i += 1
                 }
             default:
@@ -260,7 +276,8 @@ public struct TTS {
             await runPocketTts(
                 text: text, output: output, voice: voice, deEss: deEss,
                 metricsPath: metricsPath, cloneVoicePath: cloneVoicePath,
-                voiceFilePath: voiceFilePath, saveVoicePath: saveVoicePath)
+                voiceFilePath: voiceFilePath, saveVoicePath: saveVoicePath,
+                language: pocketLanguage, seed: pocketSeed)
             return
         }
 
@@ -301,14 +318,7 @@ public struct TTS {
             let tSynth1 = Date()
 
             // Write WAV
-            let outURL = {
-                let expanded = (output as NSString).expandingTildeInPath
-                if expanded.hasPrefix("/") {
-                    return URL(fileURLWithPath: expanded)
-                }
-                let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-                return cwd.appendingPathComponent(expanded)
-            }()
+            let outURL = resolveInputURL(output)
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try wav.write(to: outURL)
@@ -323,7 +333,7 @@ public struct TTS {
                     for variant in variants {
                         if let footprint = diagnostics.variantFootprints[variant] {
                             logger.info(
-                                "Model bundle \(label(for: variant)) size: \(formatBytes(footprint)) (\(footprint) bytes)"
+                                "Model bundle \(variantPreferenceLabel(variant)) size: \(formatBytes(footprint)) (\(footprint) bytes)"
                             )
                         }
                     }
@@ -506,17 +516,73 @@ public struct TTS {
         }
     }
 
+    /// Run PocketTTS in deterministic-seed mode through the session API,
+    /// applying the same de-essing post-processing as the non-seed path.
+    private static func runPocketSeededSynthesis(
+        manager: PocketTtsManager,
+        text: String,
+        voice: String,
+        voiceData: PocketTtsVoiceData?,
+        seed: UInt64,
+        deEss: Bool
+    ) async throws -> Data {
+        logger.info("PocketTTS deterministic mode: seed=\(seed)")
+        let session = try await makePocketSeededSession(
+            manager: manager, voice: voice, voiceData: voiceData, seed: seed)
+        session.enqueue(text)
+        session.finish()
+        var allSamples: [Float] = []
+        for try await frame in session.frames {
+            allSamples.append(contentsOf: frame.samples)
+        }
+        if deEss {
+            AudioPostProcessor.applyTtsPostProcessing(
+                &allSamples,
+                sampleRate: Float(PocketTtsConstants.audioSampleRate),
+                deEssAmount: -3.0,
+                smoothing: false)
+        }
+        return try AudioWAV.data(
+            from: allSamples,
+            sampleRate: Double(PocketTtsConstants.audioSampleRate))
+    }
+
+    /// Pick the right `makeSession` overload based on whether a custom
+    /// `PocketTtsVoiceData` was supplied (cloned/loaded voice) or we should
+    /// fall back to a named voice from the language pack.
+    private static func makePocketSeededSession(
+        manager: PocketTtsManager,
+        voice: String,
+        voiceData: PocketTtsVoiceData?,
+        seed: UInt64
+    ) async throws -> PocketTtsSession {
+        if let voiceData = voiceData {
+            return try await manager.makeSession(
+                voiceData: voiceData,
+                temperature: PocketTtsConstants.temperature,
+                seed: seed)
+        }
+        return try await manager.makeSession(
+            voice: voice,
+            temperature: PocketTtsConstants.temperature,
+            seed: seed)
+    }
+
     private static func runPocketTts(
         text: String, output: String, voice: String, deEss: Bool,
         metricsPath: String?, cloneVoicePath: String?,
-        voiceFilePath: String?, saveVoicePath: String?
+        voiceFilePath: String?, saveVoicePath: String?,
+        language: PocketTtsLanguage,
+        seed: UInt64? = nil
     ) async {
         do {
             let tStart = Date()
             let pocketVoice =
                 voice == TtsConstants.recommendedVoice
                 ? PocketTtsConstants.defaultVoice : voice
-            let manager = PocketTtsManager(defaultVoice: pocketVoice)
+            let manager = PocketTtsManager(
+                defaultVoice: pocketVoice, language: language)
+            logger.info("PocketTTS language: \(language.rawValue)")
 
             let tLoad0 = Date()
             try await manager.initialize()
@@ -545,7 +611,15 @@ public struct TTS {
 
             let tSynth0 = Date()
             let wav: Data
-            if let voiceData = voiceData {
+            if let seed = seed {
+                wav = try await runPocketSeededSynthesis(
+                    manager: manager,
+                    text: text,
+                    voice: pocketVoice,
+                    voiceData: voiceData,
+                    seed: seed,
+                    deEss: deEss)
+            } else if let voiceData = voiceData {
                 wav = try await manager.synthesize(
                     text: text, voiceData: voiceData, deEss: deEss)
             } else {
@@ -554,16 +628,7 @@ public struct TTS {
             }
             let tSynth1 = Date()
 
-            let outURL = {
-                let expanded = (output as NSString).expandingTildeInPath
-                if expanded.hasPrefix("/") {
-                    return URL(fileURLWithPath: expanded)
-                }
-                let cwd = URL(
-                    fileURLWithPath: FileManager.default.currentDirectoryPath,
-                    isDirectory: true)
-                return cwd.appendingPathComponent(expanded)
-            }()
+            let outURL = resolveInputURL(output)
             try FileManager.default.createDirectory(
                 at: outURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
@@ -812,6 +877,14 @@ public struct TTS {
               --clone-voice FILE   Clone voice from audio file (WAV, MP3, M4A, etc.)
               --voice-file FILE    Load previously saved voice .bin file
               --save-voice FILE    Save cloned voice to .bin file for later use
+
+            PocketTTS Language Packs:
+              --language ID        Language pack (default: english)
+                                   Supported: english, french_24l,
+                                   german, german_24l, italian, italian_24l,
+                                   portuguese, portuguese_24l, spanish, spanish_24l
+                                   Note: French is 24-layer only (no 6-layer pack upstream)
+              --seed N             Deterministic-mode seed (uses session API for fixed RNG)
 
             Lexicon file format:
               # Comments start with #
