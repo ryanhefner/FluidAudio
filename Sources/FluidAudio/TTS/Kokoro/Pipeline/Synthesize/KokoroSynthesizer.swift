@@ -14,10 +14,24 @@ public struct KokoroSynthesizer {
     static let lexiconCache = LexiconCache()
     static let multiArrayPool = MultiArrayPool()
 
+    static func shouldForceShortVariant() -> Bool {
+        forcedVariant() == .fiveSecond
+    }
+
+    static func forcedVariant() -> ModelNames.TTS.Variant? {
+        switch currentRuntimeOptions().kokoroVariantPolicy {
+        case .automatic:
+            return nil
+        case .force(let variant):
+            return variant
+        }
+    }
+
     private enum Context {
         @TaskLocal static var modelCache: KokoroModelCache?
         @TaskLocal static var lexiconAssets: LexiconAssetManager?
         @TaskLocal static var customLexicon: TtsCustomLexicon?
+        @TaskLocal static var runtimeOptions: TtsRuntimeOptions = .default
     }
 
     static func withModelCache<T>(
@@ -47,8 +61,21 @@ public struct KokoroSynthesizer {
         }
     }
 
+    static func withRuntimeOptions<T>(
+        _ options: TtsRuntimeOptions,
+        operation: () async throws -> T
+    ) async rethrows -> T {
+        try await Context.$runtimeOptions.withValue(options) {
+            try await operation()
+        }
+    }
+
     static func currentCustomLexicon() -> TtsCustomLexicon? {
         Context.customLexicon
+    }
+
+    static func currentRuntimeOptions() -> TtsRuntimeOptions {
+        Context.runtimeOptions
     }
 
     static func currentModelCache() throws -> KokoroModelCache {
@@ -200,6 +227,10 @@ public struct KokoroSynthesizer {
             let long = try await tokenLength(for: .fifteenSecond)
             return TokenCapacities(short: long, long: long)
         case nil:
+            if let forcedVariant = forcedVariant() {
+                let capacity = try await tokenLength(for: forcedVariant)
+                return TokenCapacities(short: capacity, long: capacity)
+            }
             async let short = tokenLength(for: .fiveSecond)
             async let long = tokenLength(for: .fifteenSecond)
             return try await TokenCapacities(short: short, long: long)
@@ -227,6 +258,15 @@ public struct KokoroSynthesizer {
                 )
             }
             return preference
+        }
+        if let forcedVariant = forcedVariant() {
+            let capacity = capacities.capacity(for: forcedVariant)
+            guard tokenCount <= capacity else {
+                throw TTSError.processingFailed(
+                    "Chunk token count \(tokenCount) exceeds \(variantDescription(forcedVariant)) capacity \(capacity)"
+                )
+            }
+            return forcedVariant
         }
         let shortCapacity = capacities.short
         let longCapacity = capacities.long
@@ -571,11 +611,12 @@ public struct KokoroSynthesizer {
 
         let totalChunks = entries.count
         let groupedByTargetTokens = Dictionary(grouping: entries, by: { $0.template.targetTokens })
+        let preallocatedCount = currentRuntimeOptions().effectiveKokoroPreallocatedArrayCount
         let phasesShape: [NSNumber] = [1, 9]
         try await multiArrayPool.preallocate(
             shape: phasesShape,
             dataType: .float32,
-            count: max(1, totalChunks),
+            count: preallocatedCount ?? max(1, totalChunks),
             zeroFill: true
         )
         for (targetTokens, group) in groupedByTargetTokens {
@@ -583,7 +624,7 @@ public struct KokoroSynthesizer {
             try await multiArrayPool.preallocate(
                 shape: shape,
                 dataType: .int32,
-                count: max(1, group.count * 2),
+                count: preallocatedCount.map { max(2, $0 * 2) } ?? max(1, group.count * 2),
                 zeroFill: false
             )
         }
@@ -591,7 +632,7 @@ public struct KokoroSynthesizer {
         try await multiArrayPool.preallocate(
             shape: refShape,
             dataType: .float32,
-            count: max(1, totalChunks),
+            count: preallocatedCount ?? max(1, totalChunks),
             zeroFill: false
         )
         let chunkTemplates = entries.map { $0.template }
@@ -601,48 +642,97 @@ public struct KokoroSynthesizer {
         let samplesPerMillisecond = Double(TtsConstants.audioSampleRate) / 1_000.0
         let crossfadeN = max(0, Int(Double(crossfadeMs) * samplesPerMillisecond))
         var totalPredictionTime: TimeInterval = 0
-        Self.logger.info("Starting audio inference across \(totalChunks) chunk(s)")
 
-        let chunkOutputs = try await withThrowingTaskGroup(of: ChunkSynthesisResult.self) { group in
+        let maxConcurrentChunks = currentRuntimeOptions().effectiveKokoroMaxConcurrentChunks ?? totalChunks
+        let sortedOutputs: [ChunkSynthesisResult]
+        if maxConcurrentChunks <= 1 {
+            var outputs: [ChunkSynthesisResult] = []
+            outputs.reserveCapacity(totalChunks)
             for (index, entry) in entries.enumerated() {
                 let chunk = entry.chunk
                 let inputIds = entry.inputIds
                 let template = entry.template
-                let chunkIndex = index
                 guard let embeddingData = embeddingCache[inputIds.count] else {
                     throw TTSError.processingFailed(
                         "Missing voice embedding for chunk \(index + 1) with \(inputIds.count) tokens"
                     )
                 }
-                let referenceVector = embeddingData.vector
-                group.addTask(priority: .userInitiated) {
-                    Self.logger.info(
-                        "Processing chunk \(chunkIndex + 1)/\(totalChunks): \(chunk.words.count) words")
-                    Self.logger.info("Chunk \(chunkIndex + 1) text: '\(template.text)'")
-                    Self.logger.info(
-                        "Chunk \(chunkIndex + 1) using Kokoro \(variantDescription(template.variant)) model")
-                    let (chunkSamples, predictionTime) = try await synthesizeChunk(
-                        chunk,
-                        inputIds: inputIds,
-                        variant: template.variant,
-                        targetTokens: template.targetTokens,
-                        referenceVector: referenceVector)
-                    return ChunkSynthesisResult(
-                        index: chunkIndex,
-                        samples: chunkSamples,
-                        predictionTime: predictionTime)
+
+                let (chunkSamples, predictionTime) = try await synthesizeChunk(
+                    chunk,
+                    inputIds: inputIds,
+                    variant: template.variant,
+                    targetTokens: template.targetTokens,
+                    referenceVector: embeddingData.vector
+                )
+                outputs.append(ChunkSynthesisResult(
+                    index: index,
+                    samples: chunkSamples,
+                    predictionTime: predictionTime
+                ))
+            }
+            sortedOutputs = outputs
+        } else {
+            var outputs: [ChunkSynthesisResult] = []
+            outputs.reserveCapacity(totalChunks)
+            try await withThrowingTaskGroup(of: ChunkSynthesisResult.self) { group in
+                var nextIndex = 0
+                while nextIndex < min(maxConcurrentChunks, totalChunks) {
+                    let index = nextIndex
+                    let entry = entries[index]
+                    let inputIds = entry.inputIds
+                    guard let embeddingData = embeddingCache[inputIds.count] else {
+                        throw TTSError.processingFailed(
+                            "Missing voice embedding for chunk \(index + 1) with \(inputIds.count) tokens"
+                        )
+                    }
+                    group.addTask {
+                        let (chunkSamples, predictionTime) = try await synthesizeChunk(
+                            entry.chunk,
+                            inputIds: inputIds,
+                            variant: entry.template.variant,
+                            targetTokens: entry.template.targetTokens,
+                            referenceVector: embeddingData.vector
+                        )
+                        return ChunkSynthesisResult(
+                            index: index,
+                            samples: chunkSamples,
+                            predictionTime: predictionTime
+                        )
+                    }
+                    nextIndex += 1
+                }
+
+                while let output = try await group.next() {
+                    outputs.append(output)
+                    guard nextIndex < totalChunks else { continue }
+                    let index = nextIndex
+                    let entry = entries[index]
+                    let inputIds = entry.inputIds
+                    guard let embeddingData = embeddingCache[inputIds.count] else {
+                        throw TTSError.processingFailed(
+                            "Missing voice embedding for chunk \(index + 1) with \(inputIds.count) tokens"
+                        )
+                    }
+                    group.addTask {
+                        let (chunkSamples, predictionTime) = try await synthesizeChunk(
+                            entry.chunk,
+                            inputIds: inputIds,
+                            variant: entry.template.variant,
+                            targetTokens: entry.template.targetTokens,
+                            referenceVector: embeddingData.vector
+                        )
+                        return ChunkSynthesisResult(
+                            index: index,
+                            samples: chunkSamples,
+                            predictionTime: predictionTime
+                        )
+                    }
+                    nextIndex += 1
                 }
             }
-
-            var results: [ChunkSynthesisResult] = []
-            results.reserveCapacity(totalChunks)
-            for try await result in group {
-                results.append(result)
-            }
-            return results
+            sortedOutputs = outputs.sorted { $0.index < $1.index }
         }
-
-        let sortedOutputs = chunkOutputs.sorted { $0.index < $1.index }
 
         var totalFrameCount = 0
         for output in sortedOutputs {
@@ -651,9 +741,6 @@ public struct KokoroSynthesizer {
             chunkSampleBuffers[index] = chunkSamples
             totalPredictionTime += output.predictionTime
 
-            Self.logger.info(
-                "Chunk \(index + 1) model prediction latency: \(String(format: "%.3f", output.predictionTime))s")
-            let chunkDurationSeconds = Double(chunkSamples.count) / Double(TtsConstants.audioSampleRate)
             let chunkFrameCount =
                 TtsConstants.kokoroFrameSamples > 0
                 ? chunkSamples.count / TtsConstants.kokoroFrameSamples
@@ -661,9 +748,6 @@ public struct KokoroSynthesizer {
             if TtsConstants.kokoroFrameSamples > 0 {
                 totalFrameCount += chunkFrameCount
             }
-            Self.logger.info(
-                "Chunk \(index + 1) duration: \(String(format: "%.3f", chunkDurationSeconds))s (\(chunkFrameCount) frames)"
-            )
 
             if index == 0 {
                 allSamples.append(contentsOf: chunkSamples)

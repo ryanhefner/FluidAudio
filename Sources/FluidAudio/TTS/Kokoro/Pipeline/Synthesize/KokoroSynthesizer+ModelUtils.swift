@@ -9,11 +9,21 @@ extension KokoroSynthesizer {
 
     public static func loadModel(variant: ModelNames.TTS.Variant? = nil) async throws {
         let cache = try currentModelCache()
+        let effectiveVariant: ModelNames.TTS.Variant?
         if let variant {
-            try await cache.loadModelsIfNeeded(variants: Set([variant]))
+            effectiveVariant = variant
+        } else if let forcedVariant = forcedVariant() {
+            effectiveVariant = forcedVariant
         } else {
-            try await cache.loadModelsIfNeeded()
+            effectiveVariant = nil
         }
+
+        if let effectiveVariant {
+            try await cache.loadModelsIfNeeded(variants: Set([effectiveVariant]))
+            return
+        }
+
+        try await cache.loadModelsIfNeeded()
     }
 
     public static func loadSimplePhonemeDictionary() async throws {

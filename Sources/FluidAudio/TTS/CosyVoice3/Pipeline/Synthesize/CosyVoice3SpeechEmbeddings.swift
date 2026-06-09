@@ -60,20 +60,17 @@ public final class CosyVoice3SpeechEmbeddings {
         let rowStart = Int(tokenId) * rowByteSize
         let dim = embedDim
         let lastStride = array.strides.last?.intValue ?? 1
-        #if arch(arm64)
-        tableBytes.withUnsafeBytes { src in
-            let basePtr = src.baseAddress!.advanced(by: rowStart)
-            let fp16Ptr = basePtr.assumingMemoryBound(to: Float16.self)
-            let dstPtr = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
+
+        tableBytes.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+            let dstPtr = array.dataPointer.bindMemory(
+                to: Float.self,
+                capacity: array.count
+            )
             for i in 0..<dim {
-                dstPtr[i * lastStride] = Float(fp16Ptr[i])
+                let byteOffset = rowStart + (i * MemoryLayout<UInt16>.stride)
+                let bits = src.loadUnaligned(fromByteOffset: byteOffset, as: UInt16.self)
+                dstPtr[i * lastStride] = CosyVoice3Float16Bits.float32(from: bits)
             }
         }
-        #else
-        // Float16 is only available on Apple Silicon — the speech_embedding
-        // safetensors table ships as fp16, with no fp32 alternative on disk.
-        throw CosyVoice3Error.predictionFailed(
-            "CosyVoice3 speech embeddings require Apple Silicon (arm64); fp16 lookup table cannot be read on x86_64")
-        #endif
     }
 }

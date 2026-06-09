@@ -40,12 +40,14 @@ public actor PocketTtsManager {
         defaultVoice: String = PocketTtsConstants.defaultVoice,
         language: PocketTtsLanguage = .english,
         directory: URL? = nil,
-        precision: PocketTtsPrecision = .fp16
+        precision: PocketTtsPrecision = .fp16,
+        runtimeOptions: TtsRuntimeOptions = .default
     ) {
         self.modelStore = PocketTtsModelStore(
             language: language,
             directory: directory,
-            precision: precision
+            precision: precision,
+            runtimeOptions: runtimeOptions
         )
         self.defaultVoice = defaultVoice
         self.language = language

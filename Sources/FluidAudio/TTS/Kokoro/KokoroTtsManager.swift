@@ -46,6 +46,7 @@ public final class KokoroTtsManager {
     private var assetsReady = false
     private let directory: URL?
     private let computeUnits: MLComputeUnits
+    private let runtimeOptions: TtsRuntimeOptions
     private var defaultVoice: String
     private var defaultSpeakerId: Int
     private var ensuredVoices: Set<String> = []
@@ -67,17 +68,26 @@ public final class KokoroTtsManager {
     ///     a cache is created using the provided `directory` and `computeUnits`.
     ///   - customLexicon: Optional custom pronunciation dictionary. Entries in this dictionary
     ///     take precedence over all built-in dictionaries and grapheme-to-phoneme conversion.
+    ///   - runtimeOptions: Optional memory/performance controls for constrained devices.
     public init(
         defaultVoice: String = TtsConstants.recommendedVoice,
         defaultSpeakerId: Int = 0,
         directory: URL? = nil,
         computeUnits: MLComputeUnits = .all,
         modelCache: KokoroModelCache? = nil,
-        customLexicon: TtsCustomLexicon? = nil
+        customLexicon: TtsCustomLexicon? = nil,
+        runtimeOptions: TtsRuntimeOptions = .default
     ) {
         self.directory = directory
         self.computeUnits = computeUnits
-        self.modelCache = modelCache ?? KokoroModelCache(directory: directory, computeUnits: computeUnits)
+        self.runtimeOptions = runtimeOptions
+        self.modelCache =
+            modelCache
+            ?? KokoroModelCache(
+                directory: directory,
+                computeUnits: computeUnits,
+                runtimeOptions: runtimeOptions
+            )
         self.lexiconAssets = LexiconAssetManager()
         self.defaultVoice = Self.normalizeVoice(defaultVoice)
         self.defaultSpeakerId = defaultSpeakerId
@@ -91,11 +101,19 @@ public final class KokoroTtsManager {
         computeUnits: MLComputeUnits = .all,
         modelCache: KokoroModelCache? = nil,
         lexiconAssets: LexiconAssetManager,
-        customLexicon: TtsCustomLexicon? = nil
+        customLexicon: TtsCustomLexicon? = nil,
+        runtimeOptions: TtsRuntimeOptions = .default
     ) {
         self.directory = directory
         self.computeUnits = computeUnits
-        self.modelCache = modelCache ?? KokoroModelCache(directory: directory, computeUnits: computeUnits)
+        self.runtimeOptions = runtimeOptions
+        self.modelCache =
+            modelCache
+            ?? KokoroModelCache(
+                directory: directory,
+                computeUnits: computeUnits,
+                runtimeOptions: runtimeOptions
+            )
         self.lexiconAssets = lexiconAssets
         self.defaultVoice = Self.normalizeVoice(defaultVoice)
         self.defaultSpeakerId = defaultSpeakerId
@@ -122,7 +140,11 @@ public final class KokoroTtsManager {
     }
 
     public func initialize(preloadVoices: Set<String>? = nil) async throws {
-        let models = try await TtsModels.download(directory: directory, computeUnits: computeUnits)
+        let models = try await TtsModels.download(
+            directory: directory,
+            computeUnits: computeUnits,
+            runtimeOptions: runtimeOptions
+        )
         try await initialize(models: models, preloadVoices: preloadVoices)
     }
 
@@ -166,15 +188,17 @@ public final class KokoroTtsManager {
 
         return try await KokoroSynthesizer.withLexiconAssets(lexiconAssets) {
             try await KokoroSynthesizer.withModelCache(modelCache) {
-                try await KokoroSynthesizer.withCustomLexicon(customLexicon) {
-                    try await KokoroSynthesizer.synthesizeDetailed(
-                        text: cleanedText,
-                        voice: selectedVoice,
-                        voiceSpeed: voiceSpeed,
-                        variantPreference: variantPreference,
-                        phoneticOverrides: preprocessing.phoneticOverrides,
-                        deEss: deEss
-                    )
+                try await KokoroSynthesizer.withRuntimeOptions(runtimeOptions) {
+                    try await KokoroSynthesizer.withCustomLexicon(customLexicon) {
+                        try await KokoroSynthesizer.synthesizeDetailed(
+                            text: cleanedText,
+                            voice: selectedVoice,
+                            voiceSpeed: voiceSpeed,
+                            variantPreference: variantPreference,
+                            phoneticOverrides: preprocessing.phoneticOverrides,
+                            deEss: deEss
+                        )
+                    }
                 }
             }
         }

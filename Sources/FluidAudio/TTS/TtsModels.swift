@@ -32,31 +32,36 @@ public struct TtsModels: Sendable {
     ///   - directory: Optional override for the cache directory.
     ///   - computeUnits: CoreML compute units for model compilation. Defaults to `.all`.
     ///     Use `.cpuAndGPU` on iOS 26+ to work around ANE compiler regressions.
+    ///   - runtimeOptions: Optional memory/performance controls for constrained devices.
     ///   - progressHandler: Optional download progress callback.
     public static func download(
         variants requestedVariants: Set<ModelNames.TTS.Variant>? = nil,
         from repo: String = TtsConstants.defaultRepository,
         directory: URL? = nil,
         computeUnits: MLComputeUnits = .all,
+        runtimeOptions: TtsRuntimeOptions = .default,
         progressHandler: DownloadUtils.ProgressHandler? = nil
     ) async throws -> TtsModels {
         let targetDir = try directory ?? getCacheDirectory()
         // Pass Models subdirectory so models end up in ~/.cache/fluidaudio/Models/kokoro/
         let modelsDirectory = targetDir.appendingPathComponent(TtsConstants.defaultModelsSubdirectory)
-        let targetVariants: [ModelNames.TTS.Variant] = {
+        let requestedTargetVariants: [ModelNames.TTS.Variant] = {
             if let requested = requestedVariants, !requested.isEmpty {
                 return requested.sorted { $0.fileName < $1.fileName }
             }
             return ModelNames.TTS.Variant.allCases
         }()
+        let targetVariants = runtimeOptions.effectiveKokoroVariants(from: requestedTargetVariants)
         let modelNames = targetVariants.map { $0.fileName }
         // Pass single variant name so only the requested model is downloaded
         let variantFilter: String? = targetVariants.count == 1 ? targetVariants[0].fileName : nil
+        let effectiveComputeUnits = runtimeOptions.kokoroComputeUnits ?? computeUnits
+
         let dict = try await DownloadUtils.loadModels(
             .kokoro,
             modelNames: modelNames,
             directory: modelsDirectory,
-            computeUnits: computeUnits,
+            computeUnits: effectiveComputeUnits,
             variant: variantFilter,
             progressHandler: progressHandler
         )
@@ -71,10 +76,12 @@ public struct TtsModels: Sendable {
             loaded[variant] = model
         }
 
-        for (variant, model) in loaded {
-            let warmUpStart = Date()
-            await warmUpModel(model, variant: variant)
-            warmUpDurations[variant] = Date().timeIntervalSince(warmUpStart)
+        if runtimeOptions.kokoroWarmUpModels {
+            for (variant, model) in loaded {
+                let warmUpStart = Date()
+                await warmUpModel(model, variant: variant)
+                warmUpDurations[variant] = Date().timeIntervalSince(warmUpStart)
+            }
         }
 
         for variant in targetVariants {

@@ -18,6 +18,8 @@ public struct AppLogger: Sendable {
         case fault
     }
 
+    nonisolated(unsafe) public static var minimumLevel: Level = .warning
+
     private let osLogger: Logger
     private let subsystem: String
     private let category: String
@@ -62,6 +64,7 @@ public struct AppLogger: Sendable {
 
     // MARK: - Console Mirroring
     private func log(_ level: Level, _ message: String) {
+        guard level.rawValue >= Self.minimumLevel.rawValue else { return }
         #if DEBUG
         logToConsole(level, message)
         #else

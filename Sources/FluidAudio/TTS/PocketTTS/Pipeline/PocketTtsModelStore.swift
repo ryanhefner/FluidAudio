@@ -25,6 +25,7 @@ public actor PocketTtsModelStore {
     private var flowlmLayerKeys: PocketTtsLayerKeys?
     private var mimiDecoderKeysCache: PocketTtsMimiKeys?
     private let directory: URL?
+    private let runtimeOptions: TtsRuntimeOptions
     public let language: PocketTtsLanguage
     public let precision: PocketTtsPrecision
 
@@ -41,11 +42,13 @@ public actor PocketTtsModelStore {
     public init(
         language: PocketTtsLanguage = .english,
         directory: URL? = nil,
-        precision: PocketTtsPrecision = .fp16
+        precision: PocketTtsPrecision = .fp16,
+        runtimeOptions: TtsRuntimeOptions = .default
     ) {
         self.language = language
         self.directory = directory
         self.precision = precision
+        self.runtimeOptions = runtimeOptions
     }
 
     /// Load all four CoreML models and the constants bundle.
@@ -63,13 +66,7 @@ public actor PocketTtsModelStore {
             "Loading PocketTTS CoreML models (language=\(self.language.rawValue), precision=\(self.precision))..."
         )
 
-        // Use CPU+GPU for all models to avoid ANE float16 precision loss.
-        // The ANE processes in native float16, which causes audible artifacts
-        // in the Mimi decoder's streaming state feedback loop and may degrade
-        // quality in the other models. CPU/GPU compute in float32 matches the
-        // Python reference implementation.
-        let config = MLModelConfiguration()
-        config.computeUnits = .cpuAndGPU
+        let config = Self.inferenceConfiguration(runtimeOptions: runtimeOptions)
 
         let loadStart = Date()
 
@@ -228,7 +225,7 @@ public actor PocketTtsModelStore {
         let modelURL = try await PocketTtsResourceDownloader.ensureMimiEncoder(directory: directory)
 
         let config = MLModelConfiguration()
-        config.computeUnits = .cpuAndGPU
+        config.computeUnits = runtimeOptions.pocketTtsComputeUnits ?? .cpuAndGPU
 
         logger.info("Loading Mimi encoder for voice cloning...")
         let loadStart = Date()
@@ -267,5 +264,32 @@ public actor PocketTtsModelStore {
     public func cloneVoice(from samples: [Float]) throws -> PocketTtsVoiceData {
         let encoder = try mimiEncoder()
         return try PocketTtsVoiceCloner.cloneVoice(from: samples, using: encoder)
+    }
+
+    private static func inferenceConfiguration(runtimeOptions: TtsRuntimeOptions) -> MLModelConfiguration {
+        let config = MLModelConfiguration()
+
+        if let computeUnits = runtimeOptions.pocketTtsComputeUnits {
+            config.computeUnits = computeUnits
+            return config
+        }
+
+        #if os(iOS) && DEBUG
+        // Xcode's Metal debug layer can abort PocketTTS CoreML inference on
+        // some iOS devices with "device does not support residency sets" when
+        // these models are loaded with GPU-backed compute units. Debug builds
+        // prefer slower CPU execution so local previews fail softly instead of
+        // terminating the process. Release builds keep CPU+GPU for throughput.
+        config.computeUnits = .cpuOnly
+        #else
+        // Use CPU+GPU for all models to avoid ANE float16 precision loss.
+        // The ANE processes in native float16, which causes audible artifacts
+        // in the Mimi decoder's streaming state feedback loop and may degrade
+        // quality in the other models. CPU/GPU compute in float32 matches the
+        // Python reference implementation.
+        config.computeUnits = .cpuAndGPU
+        #endif
+
+        return config
     }
 }

@@ -552,12 +552,12 @@ public actor CosyVoice3Synthesizer {
         #if arch(arm64)
         case .float16:
             let srcBase = fullMel.dataPointer.bindMemory(
-                to: Float16.self, capacity: fullMel.count)
+                to: UInt16.self, capacity: fullMel.count)
             for b in 0..<melBins {
                 for f in 0..<validFrames {
                     let srcOff = b * srcStrides[1] + (newMelStart + f) * srcStrides[2]
                     let dstOff = b * melInputStrides[1] + f * melInputStrides[2]
-                    dstBase[dstOff] = Float(srcBase[srcOff])
+                    dstBase[dstOff] = CosyVoice3Float16Bits.float32(from: srcBase[srcOff])
                 }
             }
         #endif

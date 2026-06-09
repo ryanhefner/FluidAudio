@@ -11,24 +11,32 @@ public actor KokoroModelCache {
     private var referenceDimension: Int?
     private let directory: URL?
     private let computeUnits: MLComputeUnits
+    private let runtimeOptions: TtsRuntimeOptions
 
     /// - Parameters:
     ///   - directory: Optional override for the base cache directory.
     ///     When `nil`, uses the default platform cache location.
     ///   - computeUnits: CoreML compute units for model compilation. Defaults to `.all`.
     ///     Use `.cpuAndGPU` on iOS 26+ to work around ANE compiler regressions.
-    public init(directory: URL? = nil, computeUnits: MLComputeUnits = .all) {
+    ///   - runtimeOptions: Optional memory/performance controls for constrained devices.
+    public init(
+        directory: URL? = nil,
+        computeUnits: MLComputeUnits = .all,
+        runtimeOptions: TtsRuntimeOptions = .default
+    ) {
         self.directory = directory
         self.computeUnits = computeUnits
+        self.runtimeOptions = runtimeOptions
     }
 
     public func loadModelsIfNeeded(variants: Set<ModelNames.TTS.Variant>? = nil) async throws {
-        let targetVariants: Set<ModelNames.TTS.Variant> = {
+        let requestedVariants: [ModelNames.TTS.Variant] = {
             if let variants = variants, !variants.isEmpty {
-                return variants
+                return variants.sorted { $0.fileName < $1.fileName }
             }
-            return Set(ModelNames.TTS.Variant.allCases)
+            return ModelNames.TTS.Variant.allCases
         }()
+        let targetVariants = Set(runtimeOptions.effectiveKokoroVariants(from: requestedVariants))
 
         let missingVariants = targetVariants.filter { kokoroModels[$0] == nil }
         if missingVariants.isEmpty { return }
@@ -37,7 +45,11 @@ public actor KokoroModelCache {
 
         if !variantsNeedingDownload.isEmpty {
             let newlyDownloaded = try await TtsModels.download(
-                variants: Set(variantsNeedingDownload), directory: directory, computeUnits: computeUnits)
+                variants: Set(variantsNeedingDownload),
+                directory: directory,
+                computeUnits: computeUnits,
+                runtimeOptions: runtimeOptions
+            )
             for (variant, model) in newlyDownloaded.modelsByVariant {
                 downloadedModels[variant] = model
             }
